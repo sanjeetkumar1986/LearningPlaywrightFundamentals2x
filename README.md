@@ -135,6 +135,44 @@ test("two users interact", async ({ browser }) => {
 
 Context options (`viewport`, `locale`, `timezoneId`, `geolocation`, or a full device profile like `userAgent` + `isMobile` for mobile emulation) are passed into `browser.newContext({...})`, see [`237_BCP_Test_Options.spec.ts`](tests/02_First_tests/237_BCP_Test_Options.spec.ts).
 
+### 03 - Locators & Commands
+
+**Concept:** a locator (`page.locator(...)`) does not find the element immediately, it is a lazy, re-queryable reference. Playwright resolves it fresh at action time and auto-waits (strict mode: exactly one match, or it throws) until the element is actionable.
+
+**Why:** DOM elements re-render (React/Vue re-mount, AJAX swaps content); a locator that re-queries on every action survives that churn, unlike a one-time `document.querySelector` handle.
+
+**Q&A: why use this?**
+- **Q: What is "strict mode"?** A: `locator()` throws if a selector resolves to more than one element, forcing you to narrow the selector instead of silently acting on the first match.
+- **Q: CSS selector cheat sheet?** A: `#id` for id, `.class` for className, `[name="value"]` for the name attribute, bare `tag` for a tag selector.
+- **Q: Why does `.fill()` succeed without a manual wait?** A: Auto-wait, Playwright polls the element until visible, enabled, and stable before firing the action.
+
+```mermaid
+flowchart LR
+    A[page.locator&#40;selector&#41;] -->|lazy, no DOM query yet| B{Action called: .fill&#40;&#41;, .click&#40;&#41;}
+    B --> C[Resolve selector now]
+    C --> D{Strict mode: 1 match?}
+    D -->|No| E[Throw]
+    D -->|Yes| F[Auto-wait: visible, enabled, stable]
+    F --> G[Perform action]
+```
+
+```ts
+test("TC#1 - Verify VWO login error with lazy, strict, and auto-wait", async ({ page }) => {
+    await page.goto("https://app.vwo.com/#login");
+
+    const userNameField = page.locator('#login-username');
+    const passwordField = page.locator("#login-password");
+    const loginButton = page.locator("#js-login-btn");
+
+    await userNameField.fill("admin@admin.com");
+    await passwordField.fill("pass123");
+    await loginButton.click();
+
+    const error_message = page.locator('#js-notification-box-msg');
+    await expect(error_message).toContainText("Your email, password, IP address or location did not match");
+});
+```
+
 ## Configuration Highlights
 
 Defined in `playwright.config.ts`:
