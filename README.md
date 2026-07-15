@@ -20,6 +20,10 @@ npm install
 
 # 2. Install Playwright browsers
 npx playwright install
+
+# 3. Set up credentials (needed for module 04's session-storage lab)
+cp .env.example .env
+# then edit .env and add your own VWO_USER / VWO_PASS
 ```
 
 ## Running Tests
@@ -43,11 +47,17 @@ npx playwright test --debug
 
 ## Viewing the Report
 
-After a run, open the HTML report:
+This repo ships a custom TTA HTML reporter (see module 05). After a run:
 
 ```bash
-npx playwright show-report
+# Newest run (index.html always redirects to the latest report)
+open tta-report/index.html
+
+# Every past run, newest first
+open tta-report/history.html
 ```
+
+The report updates live *while* tests run — leave it open in a browser tab and it refreshes every 5s.
 
 ## Project Structure
 
@@ -56,13 +66,21 @@ npx playwright show-report
 ├── tests/
 │   ├── 01_Basics/                    # Test anatomy, annotations (skip/only/fail/slow)
 │   ├── 02_First_tests/               # Browser → Context → Page (BCP) hierarchy
-│   ├── 03_Locators_Commands/ … 23_Advance_Framework/   # Curriculum modules (scaffolded, WIP)
+│   ├── 03_Locators_Commands/         # Lazy locators, strict mode, auto-wait, built-ins
+│   ├── 04_Session_Storage/           # storageState: log in once, reuse the session
+│   ├── 05_Allure_Reporting/          # Custom TTA HTML reporter + test.step
+│   ├── 06_Multiple_Element_/ … 23_Advance_Framework/   # Curriculum modules (scaffolded, WIP)
 │   ├── Template.spec.ts              # Empty spec scaffold, copy for new tests
 │   └── example.spec.ts               # Sample: title check + "Get started" navigation
+├── utils/
+│   └── CustomReporter.ts   # Custom TTA HTML reporter (implements Playwright's Reporter)
 ├── playwright.config.ts    # Playwright configuration
+├── .env.example            # Template for VWO_USER / VWO_PASS — copy to .env
 ├── package.json
 └── .gitignore
 ```
+
+> **Secrets:** `.env` and `user-session.json` are gitignored. Copy `.env.example` to `.env` and add your own VWO credentials before running module 04.
 
 ## What's Inside
 
@@ -265,6 +283,93 @@ test("type key-by-key then navigate history", async ({ page }) => {
 });
 ```
 
+### 04 - Session Storage (Log In Once)
+
+**Concept:** `context.storageState({ path })` snapshots cookies + localStorage to a JSON file after a real login. Any later test loads it with `test.use({ storageState: "./user-session.json" })` and starts already authenticated, skipping the login UI entirely.
+
+**Why:** driving the login form in every test is slow (3-5s each), brittle (a selector change breaks the whole suite), and tests nothing new after the first run.
+
+**Q&A: why use this?**
+- **Q: Why does my saved session come back empty?** A: You snapshotted before login finished. Wait for the post-login URL (`await page.waitForURL(/#\/(dashboard|home)/)`) *then* call `storageState`.
+- **Q: Where do the credentials go?** A: `.env` (gitignored), read via `dotenv`. Never hardcode them — this repo is public, and pushed secrets live in git history forever.
+- **Q: Does the session expire?** A: Yes. It's a real auth cookie with a real TTL — re-run `247_SessionStorage.spec.ts` to refresh it, and never commit the JSON.
+
+```mermaid
+flowchart LR
+    A["247: saveSession&#40;&#41;"] -->|real login, once| B[waitForURL: dashboard]
+    B --> C["storageState&#40;{path}&#41;"]
+    C --> D[(user-session.json)]
+    D -->|test.use| E["248 / 249: goto dashboard"]
+    E --> F((No login form))
+```
+
+```ts
+// Step 1 — save the session once (reads creds from .env, never hardcoded)
+await page.fill("#login-username", process.env.VWO_USER!);
+await page.fill("#login-password", process.env.VWO_PASS!);
+await page.click("#js-login-btn");
+await page.waitForURL(/#\/(dashboard|home)/, { timeout: 15000 });
+await context.storageState({ path: "./user-session.json" });
+
+// Step 2 — every later spec starts logged in
+test.use({ storageState: "./user-session.json" });
+
+test("go directly to dashboard — no login", async ({ page }) => {
+    await page.goto("https://app.wingify.com/#/dashboard/get-started?accountId=1227004");
+    await expect(page).toHaveURL(/dashboard/);
+});
+```
+
+### 05 - Custom Reporter & Test Steps
+
+**Concept:** a reporter is a class implementing Playwright's `Reporter` interface — `onBegin`, `onTestBegin`, `onStepEnd`, `onTestEnd`, `onEnd`. Playwright calls these hooks as the run happens; what you build from them is yours. [`utils/CustomReporter.ts`](utils/CustomReporter.ts) writes a live-refreshing TTA-branded HTML report with per-step screenshots, videos, traces, and console logs.
+
+**Why:** the built-in HTML reporter is generic. A custom reporter puts *your* branding, priority filters, and per-step evidence in front of stakeholders who will never open a CLI.
+
+**Q&A: why use this?**
+- **Q: How does the reporter know my steps?** A: `test.step("...")` fires `onStepBegin`/`onStepEnd`. No steps in the spec = a flat, useless report. The steps *are* the report.
+- **Q: How do screenshots land inside the right step?** A: Attach with a `step-<index>-` prefixed name (`testInfo.attach("step-0-loaded", ...)`); the reporter matches that prefix to the step index.
+- **Q: Why did both tests show the same video?** A: A real bug this module fixes — `testCounter` was incremented in `onTestBegin` but read in `onTestEnd`. Under `fullyParallel`, both tests begin before either ends, so both read the same index and overwrote each other's artifacts. Snapshot the index per test at begin.
+
+```mermaid
+flowchart TD
+    A[onBegin] -->|run starts| B[onTestBegin]
+    B -->|snapshot test index| C[onStepBegin/onStepEnd]
+    C -->|title, duration, status| D[onTestEnd]
+    D -->|copy png / webm / zip| E[tta-report/screenshots, videos, traces]
+    D --> F[onEnd]
+    F --> G[[report_TIMESTAMP.html]]
+```
+
+```ts
+// playwright.config.ts — point Playwright at the class
+reporter: [["line"], ["./utils/CustomReporter.ts"]],
+
+// The spec: steps + prefixed attachments feed the reporter's hooks
+test("go directly to dashboard — no login @P0 @smoke", async ({ page }, testInfo) => {
+    await test.step("Open VWO dashboard using saved session", async () => {
+        await page.goto("https://app.wingify.com/#/dashboard/get-started?accountId=1227004");
+        await testInfo.attach("step-0-dashboard-loaded", {
+            body: await page.screenshot(),
+            contentType: "image/png",
+        });
+    });
+
+    await test.step("Verify dashboard URL loaded", async () => {
+        await expect(page).toHaveURL(/dashboard/);
+    });
+});
+```
+
+Open the result at `tta-report/index.html` (always redirects to the newest run); `tta-report/history.html` lists every past run. `@P0` / `@smoke` tags in the test title drive the report's Priority column and filters.
+
+| | Built-in HTML | Allure | Custom TTA Reporter |
+|:--|:--|:--|:--|
+| Setup | zero | extra dep + CLI | one file you own |
+| Branding | none | limited | total |
+| Live during run | no | no | yes (auto-refresh) |
+| Best for | daily local dev | large teams, history trends | stakeholder demos, courses |
+
 ## Configuration Highlights
 
 Defined in `playwright.config.ts`:
@@ -272,7 +377,7 @@ Defined in `playwright.config.ts`:
 - `testDir: './tests'` — where specs live
 - `testMatch: ['tests/**/*.spec.ts']` — recurses into every numbered module folder
 - `fullyParallel: true` — run test files in parallel
-- `reporter: 'html'` — generate an HTML report
+- `reporter: [["line"], ["./utils/CustomReporter.ts"]]` — terminal progress + the custom TTA HTML report (module 05)
 - `trace: 'on'`, `screenshot: 'on'`, `video: 'on'` — full debug artifacts for every run (heavier, dial back for CI)
 - `headless: false`, `viewport: 1920x1080` — watch tests run during course recording
 - Projects: Chromium active; Firefox and WebKit currently commented out
