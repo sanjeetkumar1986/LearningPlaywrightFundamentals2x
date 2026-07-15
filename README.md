@@ -173,6 +173,98 @@ test("TC#1 - Verify VWO login error with lazy, strict, and auto-wait", async ({ 
 });
 ```
 
+#### 03.1 - Built-in Locators (`getByRole` / `getByText`)
+
+**Concept:** instead of CSS/XPath, Playwright ships user-facing locators that find elements the way a human or screen reader does: `getByRole`, `getByText`, `getByLabel`, `getByPlaceholder`, `getByTestId`, `getByAltText`, `getByTitle`. `getByRole` targets the accessibility role (button, textbox, checkbox) plus its accessible name.
+
+**Why:** role/text locators survive CSS refactors and hashed class names (e.g. VWO's `C(--common-color-red) invalid-reason`), because they bind to what the user sees, not to brittle markup.
+
+**Q&A: why use this?**
+- **Q: When `getByRole` vs `getByText`?** A: `getByRole` for interactive controls (button, textbox, link, checkbox); `getByText` for plain, non-interactive content like a `<div>` error message with no ARIA role.
+- **Q: Why does a bare `<div>` resist `getByRole`?** A: It resolves to the `generic` role with no accessible name, so there's nothing stable to target, `getByText` matches its visible text instead.
+- **Q: How do I make an error assertion robust?** A: Prefer `getByTestId('email-error')` if devs add `data-testid`; otherwise `getByText(...)`, never the hashed CSS class.
+
+```mermaid
+flowchart TD
+    Q{Element interactive?} -->|Yes| R["getByRole&#40;'textbox', {name}&#41;"]
+    Q -->|No, plain text| T["getByText&#40;'...'&#41;"]
+    Q -->|Has data-testid| D["getByTestId&#40;'...'&#41;"]
+    R --> A[Action or assert]
+    T --> A
+    D --> A
+```
+
+```ts
+test("signup error via built-in locators", async ({ page }) => {
+    await page.goto("https://vwo.com/free-trial/");
+    await page.getByRole('textbox', { name: "email" }).fill("abcd");
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: "Create a Free Trial Account" }).click();
+
+    // Plain <div> error: no role, match the visible text
+    await expect(
+        page.getByText('The email address you entered is incorrect.')
+    ).toBeVisible();
+});
+```
+
+#### 03.2 - Navigation Options (`waitUntil`, `referer`)
+
+**Concept:** `page.goto(url, options)` controls *when* the call resolves via `waitUntil`: `commit` (server responded) → `domcontentloaded` (HTML parsed) → `load` (default, all resources) → `networkidle` (no requests for 500ms). `referer` sets the `Referer` header so the server thinks the user arrived from a given page.
+
+**Why:** waiting for full `load`/`networkidle` on a heavy SPA wastes seconds when your assertion only needs the DOM, dialing `waitUntil` down speeds tests; `referer` reproduces analytics/attribution flows.
+
+**Q&A: why use this?**
+- **Q: What's the default?** A: `load`, Playwright waits for the `load` event (images, CSS, scripts) before `goto` resolves.
+- **Q: When use `domcontentloaded`?** A: When you only need parsed HTML and will `await` your own locator afterwards anyway, auto-wait covers the rest.
+- **Q: Why is `networkidle` discouraged?** A: It's flaky on pages with polling/websockets that never go idle, prefer web-first assertions over `networkidle`.
+
+```mermaid
+flowchart LR
+    A[commit] --> B[domcontentloaded]
+    B --> C["load (default)"]
+    C --> D[networkidle]
+    A -. fastest .-> D
+```
+
+```ts
+test("goto with waitUntil + referer", async ({ page }) => {
+    await page.goto("https://app.com/page2", { waitUntil: "domcontentloaded" });
+    await page.goto("https://app.com/landing", {
+        referer: "https://google.com/search?q=testing+academy"
+    });
+});
+```
+
+#### 03.3 - Typing Char-by-Char (`pressSequentially`) & History
+
+**Concept:** `fill()` sets an input's value in one shot; `pressSequentially(text, { delay })` types character by character, firing real `keydown`/`keyup` per key. `page.goBack()` / `page.goForward()` drive browser history.
+
+**Why:** some inputs only react to real key events, autocomplete dropdowns, input masks, key-listeners, where `fill()` is too instant to trigger them.
+
+**Q&A: why use this?**
+- **Q: `fill` vs `pressSequentially`?** A: Use `fill` by default (fast, reliable); reach for `pressSequentially` only when the UI needs per-keystroke events.
+- **Q: What does `delay` do?** A: Milliseconds between keystrokes, mimics human typing so debounced handlers/suggestions fire.
+- **Q: How do I go back a page?** A: `await page.goBack()`, returns a response for the previous history entry (or null if none).
+
+```mermaid
+flowchart LR
+    A["fill&#40;text&#41;"] -->|one shot, sets value| V[Value set]
+    B["pressSequentially&#40;text, {delay}&#41;"] -->|key by key| K[keydown/keyup per char]
+    K --> E[Triggers autocomplete / masks]
+```
+
+```ts
+test("type key-by-key then navigate history", async ({ page }) => {
+    await page.goto("https://awesomeqa.com/practice.html");
+    await page.locator('[name="firstname"]')
+        .pressSequentially("the testing academy", { delay: 200 });
+
+    await page.goto("https://app.vwo.com/login");
+    await page.goBack();
+});
+```
+
 ## Configuration Highlights
 
 Defined in `playwright.config.ts`:
@@ -183,7 +275,7 @@ Defined in `playwright.config.ts`:
 - `reporter: 'html'` — generate an HTML report
 - `trace: 'on'`, `screenshot: 'on'`, `video: 'on'` — full debug artifacts for every run (heavier, dial back for CI)
 - `headless: false`, `viewport: 1920x1080` — watch tests run during course recording
-- Projects: Firefox active; Chromium and WebKit currently commented out
+- Projects: Chromium active; Firefox and WebKit currently commented out
 - CI-aware retries and workers (`process.env.CI`)
 
 ## Learn More
