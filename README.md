@@ -69,7 +69,9 @@ The report updates live *while* tests run — leave it open in a browser tab and
 │   ├── 03_Locators_Commands/         # Lazy locators, strict mode, auto-wait, built-ins
 │   ├── 04_Session_Storage/           # storageState: log in once, reuse the session
 │   ├── 05_Allure_Reporting/          # Custom TTA HTML reporter + test.step
-│   ├── 06_Multiple_Element_/ … 23_Advance_Framework/   # Curriculum modules (scaffolded, WIP)
+│   ├── 06_Multiple_Element_/         # allInnerTexts / all() loops, getByTestId
+│   ├── 07_WebTables/                 # Dynamic XPath + structured row extraction
+│   ├── 08_… … 23_Advance_Framework/  # Curriculum modules (scaffolded, WIP)
 │   ├── Template.spec.ts              # Empty spec scaffold, copy for new tests
 │   └── example.spec.ts               # Sample: title check + "Get started" navigation
 ├── utils/
@@ -369,6 +371,92 @@ Open the result at `tta-report/index.html` (always redirects to the newest run);
 | Branding | none | limited | total |
 | Live during run | no | no | yes (auto-refresh) |
 | Best for | daily local dev | large teams, history trends | stakeholder demos, courses |
+
+### 06 - Handling Multiple Elements
+
+**Concept:** when a selector matches many elements, `.allInnerTexts()` returns a `string[]` of every match's text and `.all()` returns a `Locator[]` you can loop over. Iterate, test each, then act on the one you want, or skip the loop entirely and target a unique `data-testid`.
+
+**Why:** lists, nav menus, and result sets have repeated markup (`a.list-group-item` × N). A bare `getByText`/`getByRole` hits strict-mode (>1 match) and throws, so you either narrow to a unique attribute or fan out over the collection.
+
+**Q&A: why use this?**
+- **Q: `allInnerTexts()` vs `all()`?** A: `allInnerTexts()` gives you the text values (`string[]`) for reading/filtering; `all()` gives you the `Locator[]` when you need to act (`.click()`, `.getAttribute()`) on each element.
+- **Q: Loop match still throws "strict mode violation" — why?** A: `getByText(linkText)` can itself match many nodes; chain `.first()` to pin one, or better, use a unique `getByTestId`.
+- **Q: When skip the loop entirely?** A: The moment devs expose a stable `data-testid` — `getByTestId('forgotten-password-link').click()` is one line and can't drift.
+
+```mermaid
+flowchart TD
+    Q{Element uniquely identifiable?} -->|Yes, data-testid| D["getByTestId&#40;'...'&#41;.click&#40;&#41;"]
+    Q -->|No, repeated markup| L["locator&#40;'a.list-group-item'&#41;"]
+    L --> T["allInnerTexts&#40;&#41; → string[]"]
+    L --> A["all&#40;&#41; → Locator[]"]
+    T -->|filter for target| C["getByText&#40;t&#41;.first&#40;&#41;.click&#40;&#41;"]
+    A -->|per element| G["getAttribute&#40;'href'&#41;"]
+```
+
+```ts
+await page.goto("https://app.thetestingacademy.com/playwright/multiple_element_filter");
+
+// Read every link's text
+const texts: string[] = await page.locator("a.list-group-item").allInnerTexts();
+for (const linkText of texts) {
+    if (linkText === "Forgotten Password") {
+        await page.getByText(linkText).first().click();   // .first() avoids strict-mode throw
+    }
+}
+
+// Or act on each Locator directly
+for (const link of await page.locator('a.list-group-item').all()) {
+    console.log(await link.getAttribute("href"));
+}
+
+// Cleanest when a testid exists — no loop at all
+await page.getByTestId('forgotten-password-link').click();
+```
+
+### 07 - Web Tables (Dynamic Extraction)
+
+**Concept:** an HTML `<table>` is a grid of `tr` rows and `td` cells. Two ways to walk it: build a **dynamic XPath** per cell (`.../tr[i]/td[j]`) inside a nested loop, or use Playwright's `.nth(i)` on a row locator and pull each row's cells with `.allInnerTexts()`.
+
+**Why:** table data is positional and often dynamic (row order changes, new rows appear). Hardcoding `tr[5]/td[2]` breaks the moment the data shifts, so you compute the path or index at runtime and search by content.
+
+**Q&A: why use this?**
+- **Q: Dynamic XPath vs `.nth()`?** A: XPath string-building shines when you need axis tricks like `following-sibling::td` (jump from the matched cell to its neighbour); `.nth()` + `allInnerTexts()` is cleaner for reading a whole row as an array.
+- **Q: Why start the row loop at `i = 2`?** A: `tr[1]` is the header row; data begins at `tr[2]`. XPath is 1-indexed, unlike `.nth()` which is 0-indexed.
+- **Q: How do I grab a value in the same row as a match?** A: Find the cell by text, then hop sideways with `${cellPath}/following-sibling::td` instead of guessing the column index.
+
+```mermaid
+flowchart TD
+    S[Locate table] --> R["count&#40;&#41; rows &amp; cols"]
+    R --> L{Loop i=2..rows, j=1..cols}
+    L --> P["build XPath tr[i]/td[j]"]
+    P --> M{cell text matches target?}
+    M -->|Yes| F["following-sibling::td → related value"]
+    M -->|No| L
+```
+
+```ts
+await page.goto("https://awesomeqa.com/webtable.html");
+
+const rows = await page.locator("//table[@id='customers']/tbody/tr").count();
+const cols = await page.locator("//table[@id='customers']/tbody/tr[2]/td").count();
+
+for (let i = 2; i <= rows; i++) {          // tr[1] = header, data from tr[2]
+    for (let j = 1; j <= cols; j++) {
+        const cell = `//table[@id='customers']/tbody/tr[${i}]/td[${j}]`;
+        const data = await page.locator(cell).innerText();
+        if (data.includes('Helen Bennett')) {
+            const country = await page.locator(`${cell}/following-sibling::td`).innerText();
+            console.log(`Helen Bennett is In - ${country}`);
+        }
+    }
+}
+
+// Structured alternative: read each row as a string[] via .nth()
+const rowLoc = page.locator('table[summary="Sample Table"] tbody tr');
+for (let i = 0; i < await rowLoc.count(); i++) {
+    console.log(`Row ${i + 1}:`, await rowLoc.nth(i).locator('td').allInnerTexts());
+}
+```
 
 ## Configuration Highlights
 
