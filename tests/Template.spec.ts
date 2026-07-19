@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 
-test('Verify our first TC', async ({ page }) => {
+test('Verify Element by Filter', async ({ page }) => {
 
 
 });

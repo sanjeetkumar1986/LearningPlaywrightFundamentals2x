@@ -70,7 +70,7 @@ The report updates live *while* tests run — leave it open in a browser tab and
 │   ├── 04_Session_Storage/           # storageState: log in once, reuse the session
 │   ├── 05_Allure_Reporting/          # Custom TTA HTML reporter + test.step
 │   ├── 06_Multiple_Element_/         # allInnerTexts / all() loops, getByTestId
-│   ├── 07_WebTables/                 # Dynamic XPath + structured row extraction
+│   ├── 07_WebTables/                 # Dynamic XPath, filter()/:has() row targeting, pagination
 │   ├── 08_… … 23_Advance_Framework/  # Curriculum modules (scaffolded, WIP)
 │   ├── Template.spec.ts              # Empty spec scaffold, copy for new tests
 │   └── example.spec.ts               # Sample: title check + "Get started" navigation
@@ -457,6 +457,107 @@ for (let i = 0; i < await rowLoc.count(); i++) {
     console.log(`Row ${i + 1}:`, await rowLoc.nth(i).locator('td').allInnerTexts());
 }
 ```
+
+#### 07.1 - Row Targeting: `filter()`, XPath Axes & `:has()`
+
+**Concept:** three ways to pin one row (or one element) out of many identical ones: chain `.filter({ hasText })` onto a collection locator, jump between cells with XPath axes (`preceding-sibling::td`), or select a row by its content with the CSS `:has()` pseudo-class (`tr:has(td:text('...'))`).
+
+**Why:** table rows and list items share identical markup, the only thing that distinguishes "Rohan Mehta's row" from the rest is its *content*, so the selector must anchor on text and then navigate to the sibling cell you actually want to act on.
+
+**Q&A: why use this?**
+- **Q: `filter({ hasText })` vs XPath axes?** A: `filter()` narrows a `Locator[]` by contained text and stays chainable/readable; XPath axes (`preceding-sibling`, `following-sibling`) shine when you must hop *sideways* from the matched cell, e.g. from a name `<td>` to the checkbox `<td>` before it.
+- **Q: What does `tr:has(td:text('Rohan.Mehta'))` mean?** A: "the `<tr>` that *contains* a `<td>` with that exact text", `:has()` selects the parent by its child, the CSS equivalent of an XPath ancestor hop.
+- **Q: Why chain `.locator('td').first()` after the row match?** A: The row locator resolves to one `<tr>` with many `<td>` children, chaining scopes the search inside that row, and `.first()` picks a single cell so strict mode doesn't throw.
+
+```mermaid
+flowchart TD
+    S[Many identical rows] --> Q{How to pin one?}
+    Q -->|by contained text| F["locator&#40;'tr'&#41;.filter&#40;{hasText}&#41;"]
+    Q -->|hop to sibling cell| X["//td[text&#40;&#41;='name']/preceding-sibling::td/input"]
+    Q -->|CSS parent-by-child| H["tr:has&#40;td:text&#40;'name'&#41;&#41;"]
+    F --> A[Act on cell inside row]
+    X --> A
+    H --> A
+```
+
+```ts
+await page.goto('https://app.thetestingacademy.com/playwright/webtable');
+
+// XPath axis: from the name cell, hop back to the checkbox cell before it
+await page.locator(
+    "//td[text()='Aarav.Sharma']/preceding-sibling::td/input[@type='checkbox']"
+).click();
+
+// CSS :has(): select the row that contains the matching cell, then scope inside it
+await page
+    .locator("tr:has(td:text('Rohan.Mehta'))")
+    .locator("td")
+    .first()
+    .click();
+
+// filter(): same idea on any repeated collection
+const forgottenPasswordLink = page.locator('a.list-group-item')
+    .filter({ hasText: 'Forgotten Password' });
+await forgottenPasswordLink.click();
+```
+
+#### 07.2 - Paginated Tables (Search Across Pages)
+
+**Concept:** when a table is paginated, the row you want may not be in the DOM at all, only the current page's rows exist. Two strategies: **search-until-found** (filter for the row, if absent click `next-page`, repeat until found or the button disables) or **sweep-all-pages** (loop `page-1..N` testids and collect every page's cells into one array). Extract the loop into a helper (`findRowByName(page, name): Promise<Locator>`) once two specs need it.
+
+**Why:** a plain `locator().filter()` silently matches zero rows when the target lives on page 3, pagination forces you to *drive the UI* to bring the row into the DOM before you can read it.
+
+**Q&A: why use this?**
+- **Q: How does the search loop terminate?** A: Two exits: `row.count() > 0` (found, break) or `next.isDisabled()` (last page reached, throw "Row not found!"), without the disabled check it spins forever.
+- **Q: Why `row.count()` instead of `expect(row).toBeVisible()`?** A: `count()` returns immediately with the current match total (0 is a valid answer to branch on); `toBeVisible()` would *wait* and fail the test when the row simply isn't on this page yet.
+- **Q: When extract the helper function?** A: The second time a spec needs "find row by name across pages", return the row `Locator` (not extracted values) so each caller reads whatever cells it wants: `row.locator('td[data-col="email"]')`.
+
+```mermaid
+flowchart TD
+    S[goto table page 1] --> C{"row.filter&#40;{hasText: name}&#41;.count&#40;&#41; > 0?"}
+    C -->|Yes| R[Return row Locator]
+    C -->|No| D{next-page disabled?}
+    D -->|Yes| E[Throw: Row not found]
+    D -->|No| N[Click next-page] --> C
+    R --> V["read td[data-col='email'] / 'country'"]
+```
+
+```ts
+async function findRowByName(page: Page, name: string): Promise<Locator> {
+    while (true) {
+        const row = page.locator('#employees-tbody tr').filter({ hasText: name });
+        if (await row.count()) return row;
+
+        const next = page.getByTestId('next-page');
+        if (await next.isDisabled()) throw new Error(`Row not found: ${name}`);
+        await next.click();
+    }
+}
+
+test('find employee across pages', async ({ page }) => {
+    await page.goto('https://app.thetestingacademy.com/playwright/tables/webtable');
+    const row = await findRowByName(page, 'Luca Greco');
+    const email = await row.locator('td[data-col="email"]').innerText();
+    const country = await row.locator('td[data-col="country"]').innerText();
+    console.log(email, country);
+});
+
+// Sweep variant: collect a column from every page
+const allEmails: string[] = [];
+for (let p = 1; p <= 3; p++) {
+    await page.getByTestId(`page-${p}`).click();
+    allEmails.push(...await page
+        .locator('#employees-tbody tr td[data-col="email"]')
+        .allInnerTexts());
+}
+```
+
+| | Search-until-found | Sweep-all-pages |
+|:--|:--|:--|
+| Goal | one specific row | whole column/dataset |
+| Stops | on match or last page | after fixed page count |
+| Cost | early exit, usually fast | always visits every page |
+| Spec | `256` / `258` (helper fn) | `257` |
 
 ## Configuration Highlights
 
