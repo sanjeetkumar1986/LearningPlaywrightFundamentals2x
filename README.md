@@ -29,10 +29,10 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-# Run all tests (headless)
+# Run all tests (headed, per playwright.config.ts)
 npx playwright test
 
-# Run in headed mode (watch the browser)
+# Explicitly run in headed mode (watch the browser)
 npx playwright test --headed
 
 # Run a single spec
@@ -71,7 +71,8 @@ The report updates live *while* tests run — leave it open in a browser tab and
 │   ├── 05_Allure_Reporting/          # Custom TTA HTML reporter + test.step
 │   ├── 06_Multiple_Element_/         # allInnerTexts / all() loops, getByTestId
 │   ├── 07_WebTables/                 # Dynamic XPath, filter()/:has() row targeting, pagination
-│   ├── 08_… … 23_Advance_Framework/  # Curriculum modules (scaffolded, WIP)
+│   ├── 08_Web_Select_Frames_Iframe/  # Native, custom, multi-select, tag-style & async dropdowns
+│   ├── 09_… … 23_Advance_Framework/  # Remaining curriculum modules (scaffolded, WIP)
 │   ├── Template.spec.ts              # Empty spec scaffold, copy for new tests
 │   └── example.spec.ts               # Sample: title check + "Get started" navigation
 ├── utils/
@@ -558,6 +559,105 @@ for (let p = 1; p <= 3; p++) {
 | Stops | on match or last page | after fixed page count |
 | Cost | early exit, usually fast | always visits every page |
 | Spec | `256` / `258` (helper fn) | `257` |
+
+### 08 - Select Boxes & Custom Dropdowns
+
+**Concept:** native HTML `<select>` elements expose their options directly to Playwright through `selectOption()`. Custom dropdowns (including React Select-style controls) are regular buttons, inputs, listboxes, and options, so you open the trigger and interact with the rendered option by role, text, or test id.
+
+**Why:** the two controls can look identical in the browser but require different automation strategies. `selectOption()` is concise and reliable for a real `<select>`; it cannot operate a JavaScript-built dropdown that has no `<select>` element.
+
+**Q&A: why use this?**
+- **Q: How can I tell whether to use `selectOption()`?** A: Inspect the element. Use it when the control is a real `<select>` with `<option>` children; otherwise click the custom trigger and select an option from the popup.
+- **Q: Can `selectOption()` choose in more than one way?** A: Yes. A string can match an option's value or label (`'Option 2'`); you can also be explicit with `{ value: '2' }`, `{ label: 'Option 2' }`, or a zero-based index such as `{ index: 2 }`. The method returns the selected values.
+- **Q: Why prefer `getByRole('option', { name })` in a custom dropdown?** A: It describes the user-visible choice and remains stable when the component's generated classes or internal markup change.
+
+```mermaid
+flowchart TD
+    C[Dropdown control] --> Q{Real select element?}
+    Q -->|Yes| N[selectOption by value, label, or index]
+    Q -->|No| T[Click custom trigger]
+    T --> O[Locate visible option by role or text]
+    O --> S[Click option]
+    N --> A[Assert selected value]
+    S --> A
+```
+
+```ts
+// Native <select>
+await page.goto('https://the-internet.herokuapp.com/dropdown');
+await page.locator('#dropdown').selectOption('Option 2');
+await expect(page.locator('#dropdown')).toHaveValue('2');
+
+// Custom dropdown: trigger + rendered option
+await page.goto('https://app.thetestingacademy.com/playwright/tables/dropdowns');
+await page.getByTestId('lang-trigger').click();
+await page.getByRole('option', { name: 'JavaScript' }).click();
+
+await page.getByTestId('experience-trigger').click();
+await page.getByText('Mid-level (4-6 years)', { exact: true }).click();
+```
+
+#### 08.1 - React Select: Single, Multi & Tag-Style Controls
+
+**Concept:** React Select-style widgets render a trigger/input plus a popup menu instead of a native `<select>`. A single-select replaces its current choice, while multi-select and tag-style controls keep each choice as a removable chip. Press `Escape` after multi-selection when you need to dismiss the open menu before moving on.
+
+**Why:** component libraries often generate dynamic class names and nested markup. Stable ids and user-facing text keep the test focused on behavior, while keyboard actions provide a reliable way to dismiss an open menu before continuing.
+
+**Q&A: why use this?**
+- **Q: Why use `{ exact: true }` for multi-select options?** A: It prevents a short label such as `JUnit` or `security` from also matching a larger text node that contains the same word.
+- **Q: How do I add several options?** A: Keep the multi-select menu open, click each exact option, then press `Escape` when selection is complete.
+- **Q: How are existing tags selected?** A: Open the tag-style control and click each exact visible option, just like a multi-select.
+
+```ts
+await page.goto('https://app.thetestingacademy.com/playwright/tables/select-boxes');
+
+// Single selection
+await page.locator('#rs-single').click();
+await page.getByText('Cypress', { exact: true }).click();
+
+// Multiple selections become chips
+await page.locator('#rs-multi').click();
+await page.getByText('Pytest', { exact: true }).click();
+await page.getByText('JUnit', { exact: true }).click();
+await page.keyboard.press('Escape');
+
+// Select existing choices in the creatable multi-select
+await page.locator('#rs-creatable').click();
+await page.getByText('api-testing', { exact: true }).click();
+await page.getByText('security', { exact: true }).click();
+await page.keyboard.press('Escape');
+```
+
+#### 08.2 - Async Search Dropdowns
+
+**Concept:** an async dropdown loads or filters options only after the user types. Fill the component's input, assert that the result menu contains the expected option, and then select it by its accessible role and name.
+
+**Why:** immediately clicking a result races the network/render cycle. A web-first assertion on the menu synchronizes the test with the UI without a hard-coded timeout.
+
+```mermaid
+flowchart LR
+    O[Open async dropdown] --> I[Fill search input]
+    I --> L[Options load or filter]
+    L --> E{Expected text visible?}
+    E -->|Yes| C[Click option by role]
+    E -->|Not yet| E
+```
+
+```ts
+await page.locator('#rs-async').click();
+await page.getByTestId('rs-async-input').fill('pun');
+
+const menu = page.getByTestId('rs-async-menu');
+await expect(menu).toContainText('Pune');
+await page.getByRole('option', { name: 'Pune' }).click();
+```
+
+| Control | DOM pattern | Playwright approach | Covered in |
+|:--|:--|:--|:--|
+| Native select | `<select>` + `<option>` | `selectOption()` | `259` |
+| Custom dropdown | trigger + listbox/options | click trigger, then visible option | `260` |
+| React Select single/multi/tag-style | generated input, menu, chips | stable id/text + keyboard | `261` |
+| Async select | search input + delayed menu | fill, web-first assert, click option | `261` |
 
 ## Configuration Highlights
 
