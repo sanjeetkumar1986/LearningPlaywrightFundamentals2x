@@ -34,7 +34,7 @@ export default defineConfig({
     headless: false,
     screenshot: 'on',
     video: 'on',
-    viewport: { width: 1920, height: 1080 }
+    viewport: { width: 1920, height: 1080 },
 
   },
 
@@ -42,22 +42,29 @@ export default defineConfig({
   projects: [
     // {
     //   name: 'chromium',
-    //   use: { ...devices['Desktop Chrome'] },
+    //   use: {
+    //     ...devices['Desktop Chrome'],
+    //     viewport: { width: 1920, height: 1080 },
+    //   },
     // },
-
-   // {
-    //  name: 'firefox',
-     // use: { ...devices['Desktop Firefox'] },
-    //},
     // {
     //   name: 'chromium',
     //   use: { ...devices['Desktop Chrome'] },
     // },
 
-    {
-      name: 'firefox',
-      use: { ...devices['Desktop Firefox'] },
+   {
+     name: 'firefox',
+     use: { ...devices['Desktop Firefox'] },
     },
+    // {
+    //   name: 'chromium',
+    //   use: { ...devices['Desktop Chrome'] },
+    // },
+
+    // {
+    //   name: 'firefox',
+    //   use: { ...devices['Desktop Firefox'] },
+    // },
 
     // {
     //   name: 'webkit',

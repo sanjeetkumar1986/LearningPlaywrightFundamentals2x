@@ -72,7 +72,10 @@ The report updates live *while* tests run — leave it open in a browser tab and
 │   ├── 06_Multiple_Element_/         # allInnerTexts / all() loops, getByTestId
 │   ├── 07_WebTables/                 # Dynamic XPath, filter()/:has() row targeting, pagination
 │   ├── 08_Web_Select_Frames_Iframe/  # Native, custom, multi-select, tag-style & async dropdowns
-│   ├── 09_… … 23_Advance_Framework/  # Remaining curriculum modules (scaffolded, WIP)
+│   ├── 09_Frame_Iframe/              # frameLocator, nested iframes, enumerating //frame
+│   ├── 10_Keyboard_Hover_Drag_Drop/  # keyboard API, hover menus, drag & drop, right-click
+│   ├── 11_JS_Alerts/                 # alert / confirm / prompt dialog handling
+│   ├── 12_… … 23_Advance_Framework/  # Remaining curriculum modules (scaffolded, WIP)
 │   ├── Template.spec.ts              # Empty spec scaffold, copy for new tests
 │   └── example.spec.ts               # Sample: title check + "Get started" navigation
 ├── utils/
@@ -659,6 +662,116 @@ await page.getByRole('option', { name: 'Pune' }).click();
 | React Select single/multi/tag-style | generated input, menu, chips | stable id/text + keyboard | `261` |
 | Async select | search input + delayed menu | fill, web-first assert, click option | `261` |
 
+### 09 - Frames & Iframes
+
+**Concept:** an `<iframe>` embeds a separate document with its own DOM, `page.locator()` cannot see inside it. `page.frameLocator(selector)` returns a `FrameLocator` scoped to that document; frames can nest, so a `FrameLocator` can itself call `.frameLocator()` again to drill further down.
+
+**Why:** widgets like payment forms, embedded registration panels, or third-party iframes are literally unreachable from the parent page's locator tree, you have to explicitly step into the frame before any `.fill()`/`.click()` will find the element.
+
+**Q&A — why use this?**
+- **Q: How is `frameLocator()` different from the old `page.frame({ name })`?** A: `frameLocator()` is lazy and auto-waits like a normal locator, `page.frame()` grabs a `Frame` handle immediately and throws if the iframe hasn't loaded yet.
+- **Q: How do I handle 3 levels of nested iframes?** A: Chain `.frameLocator()` on the result of the previous one: `frame1.frameLocator('#pact2')` returns `frame2`, then `frame2.frameLocator('#pact3')` returns `frame3`.
+- **Q: How do I discover unnamed frames on a page?** A: `page.locator('//frame').all()` returns every `<frame>` element, then read `.getAttribute('name')` / `.getAttribute('src')` on each to find the one you need.
+
+```mermaid
+flowchart TD
+    P[page] -->|frameLocator selector| F1[FrameLocator: frame1]
+    F1 -->|frameLocator selector| F2[FrameLocator: frame2]
+    F2 -->|frameLocator selector| F3[FrameLocator: frame3]
+    F1 --> A1[fill / click inside frame1]
+    F2 --> A2[fill / click inside frame2]
+    F3 --> A3[fill / click inside frame3]
+```
+
+```ts
+await page.goto('https://selectorshub.com/iframe-scenario/');
+
+// Step into 3 levels of nested iframes
+let frame1 = page.frameLocator('#pact1');
+let frame2 = frame1.frameLocator('#pact2');
+let frame3 = frame2.frameLocator('#pact3');
+
+await frame1.locator('#inp_val').fill('Aishwarya Rai');
+await frame2.locator('#jex').fill('Wife');
+await frame3.locator('#glaf').fill('Playwright');
+
+// Enumerate every frame on a multi-frame page
+const allFrames = await page.locator('//frame').all();
+for (const frame of allFrames) {
+    console.log(await frame.getAttribute('name'), ':', await frame.getAttribute('src'));
+}
+```
+
+### 10 - Keyboard, Hover, Drag & Drop
+
+**Concept:** `page.keyboard` drives real key events (`press`, `down`/`up`, chords like `Control+A`) independent of any element; `locator.hover()` moves the mouse over an element to reveal menus without clicking; `locator.dragTo(target)` performs a full drag-and-drop (mousedown → move → mouseup) between two elements; `locator.click({ button: 'right' })` opens a context menu.
+
+**Why:** hover-to-reveal nav menus, Trello-style drag boards, and right-click menus all depend on real pointer/key sequences, a plain `.click()` cannot reveal a hover submenu or reorder a draggable card.
+
+**Q&A — why use this?**
+- **Q: `dragTo()` vs manual `mouse.down()`/`move()`/`up()`?** A: `dragTo()` covers the vast majority of HTML5 drag-and-drop; drop to the manual sequence only when `dragTo()` fails to fire the target's `dragover` handler (some custom drag libraries need the extra intermediate `mouse.move()`).
+- **Q: Why does a hover menu need `.hover()` and not `.click()`?** A: The menu item only exists in the DOM (or only becomes clickable) after the trigger element receives a real `mouseover`, `.click()` alone never dispatches that event.
+- **Q: How do I read a right-click context menu's options?** A: `click({ button: 'right' })` opens it, then `allInnerTexts()` on the menu items' locator reads every option before clicking one.
+
+```mermaid
+flowchart LR
+    K[page.keyboard.press] --> A1[key event, no element target]
+    H["locator.hover&#40;&#41;"] --> A2[reveals submenu]
+    D["source.dragTo&#40;target&#41;"] --> A3[mousedown → move → mouseup]
+    R["locator.click&#40;{button:'right'}&#41;"] --> A4[context menu opens]
+```
+
+```ts
+// Hover to reveal a submenu, then click the revealed item
+await page.getByText('Add-ons', { exact: true }).hover();
+await page.getByText('FlyEarly', { exact: true }).click();
+
+// Drag and drop between two columns
+await page.locator('#column-a').dragTo(page.locator('#column-b'));
+
+// Right-click, read the menu, click an option
+await page.locator('span.context-menu-one').first().click({ button: 'right' });
+const options = await page.locator('ul.context-menu-list span').allInnerTexts();
+await page.getByText('Copy', { exact: true }).first().click();
+```
+
+Full keyboard key-name table, mouse API, and every drag-and-drop method (`dragTo`, `page.dragAndDrop`, manual) are in [`tests/10_Keyboard_Hover_Drag_Drop/learning.md`](tests/10_Keyboard_Hover_Drag_Drop/learning.md).
+
+### 11 - JS Alerts (Dialogs)
+
+**Concept:** native browser dialogs (`alert`, `confirm`, `prompt`) block the page, so Playwright surfaces them as a `dialog` event instead of a locator. Register `page.once('dialog', handler)` **before** the action that triggers the dialog, then call `dialog.accept()` / `dialog.accept(text)` / `dialog.dismiss()` inside the handler.
+
+**Why:** if no `dialog` listener is registered, Playwright auto-dismisses the dialog by default, silently discarding any `prompt()` input, so an assertion on the resulting page state fails for a reason that has nothing to do with your locator.
+
+**Q&A — why use this?**
+- **Q: Why `page.once` instead of `page.on`?** A: `once` auto-removes the listener after it fires once, which matches a single dialog trigger and avoids a stale handler catching an unrelated later dialog.
+- **Q: How do I answer a `prompt()`?** A: `dialog.accept(inputText)`, the string becomes the prompt's return value; `dialog.accept()` with no argument submits the prompt's current default value.
+- **Q: What can I assert on the dialog itself?** A: `dialog.type()` (`'alert' | 'confirm' | 'prompt'`), `dialog.message()`, and for prompts, `dialog.defaultValue()`, all readable before you `accept()`/`dismiss()`.
+
+```mermaid
+sequenceDiagram
+    participant Test
+    participant Page
+    Test->>Page: page.once('dialog', handler)
+    Test->>Page: click "Click for JS Prompt"
+    Page-->>Test: dialog event (type: prompt)
+    Test->>Test: assert dialog.type() / defaultValue()
+    Test->>Page: dialog.accept(inputText)
+```
+
+```ts
+const inputText = 'Hello from The Testing Academy';
+
+// Register the handler BEFORE the action that opens the dialog
+page.once('dialog', async dialog => {
+    expect(dialog.type()).toBe('prompt');
+    expect(dialog.defaultValue()).toBe('');
+    await dialog.accept(inputText);
+});
+
+await page.locator('button', { hasText: 'Click for JS Prompt' }).click();
+```
+
 ## Configuration Highlights
 
 Defined in `playwright.config.ts`:
@@ -668,7 +781,7 @@ Defined in `playwright.config.ts`:
 - `fullyParallel: true` — run test files in parallel
 - `reporter: [["line"], ["./utils/CustomReporter.ts"]]` — terminal progress + the custom TTA HTML report (module 05)
 - `trace: 'on'`, `screenshot: 'on'`, `video: 'on'` — full debug artifacts for every run (heavier, dial back for CI)
-- `headless: false`, `viewport: 1920x1080` — watch tests run during course recording
+- `headless: false`, `viewport: null` + `launchOptions.args: ['--start-maximized']` — browser opens maximized to the real screen size instead of a fixed viewport
 - Projects: Chromium active; Firefox and WebKit currently commented out
 - CI-aware retries and workers (`process.env.CI`)
 
