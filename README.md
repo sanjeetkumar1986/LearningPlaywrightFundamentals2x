@@ -75,7 +75,8 @@ The report updates live *while* tests run — leave it open in a browser tab and
 │   ├── 09_Frame_Iframe/              # frameLocator, nested iframes, enumerating //frame
 │   ├── 10_Keyboard_Hover_Drag_Drop/  # keyboard API, hover menus, drag & drop, right-click
 │   ├── 11_JS_Alerts/                 # alert / confirm / prompt dialog handling
-│   ├── 12_… … 23_Advance_Framework/  # Remaining curriculum modules (scaffolded, WIP)
+│   ├── 12_Handle_SVG/                # svg locator, count()/nth() over dynamic result lists
+│   ├── 13_… … 23_Advance_Framework/  # Remaining curriculum modules (scaffolded, WIP)
 │   ├── Template.spec.ts              # Empty spec scaffold, copy for new tests
 │   └── example.spec.ts               # Sample: title check + "Get started" navigation
 ├── utils/
@@ -747,6 +748,7 @@ Full keyboard key-name table, mouse API, and every drag-and-drop method (`dragTo
 - **Q: Why `page.once` instead of `page.on`?** A: `once` auto-removes the listener after it fires once, which matches a single dialog trigger and avoids a stale handler catching an unrelated later dialog.
 - **Q: How do I answer a `prompt()`?** A: `dialog.accept(inputText)`, the string becomes the prompt's return value; `dialog.accept()` with no argument submits the prompt's current default value.
 - **Q: What can I assert on the dialog itself?** A: `dialog.type()` (`'alert' | 'confirm' | 'prompt'`), `dialog.message()`, and for prompts, `dialog.defaultValue()`, all readable before you `accept()`/`dismiss()`.
+- **Q: Why split alert/confirm/prompt into three tests instead of one?** A: each dialog type is independent, one test per type isolates failures, `test.describe` + `beforeEach` shares the same `page.goto` setup without repeating it three times.
 
 ```mermaid
 sequenceDiagram
@@ -760,16 +762,62 @@ sequenceDiagram
 ```
 
 ```ts
-const inputText = 'Hello from The Testing Academy';
+test.describe('Javascript Alerts', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('https://the-internet.herokuapp.com/javascript_alerts');
+    });
 
-// Register the handler BEFORE the action that opens the dialog
-page.once('dialog', async dialog => {
-    expect(dialog.type()).toBe('prompt');
-    expect(dialog.defaultValue()).toBe('');
-    await dialog.accept(inputText);
+    test('JS Prompt accept 3', async ({ page }) => {
+        const inputText = 'Hello from The Testing Academy';
+
+        // Register the handler BEFORE the action that opens the dialog
+        page.once('dialog', async dialog => {
+            expect(dialog.type()).toBe('prompt');
+            expect(dialog.defaultValue()).toBe('');
+            await dialog.accept(inputText);
+        });
+
+        await page.locator('button', { hasText: 'Click for JS Prompt' }).click();
+        await expect(page.locator('#result')).toHaveText(`You entered: ${inputText}`);
+    });
 });
+```
 
-await page.locator('button', { hasText: 'Click for JS Prompt' }).click();
+### 12 - Handle SVG
+
+**Concept:** SVG nodes (icons, charts, inline graphics) sit in the DOM like any other tag, `page.locator('svg')` finds them with the exact same API as a `<button>` or `<div>`, no special SVG-aware locator needed. Reading a dynamic result list built from those clicks is a `count()` + `nth(i)` loop over a locator, not a single `.textContent()` call.
+
+**Why:** icon-only controls (a search glyph with no visible text) have nothing for `getByRole`/`getByText` to match on, `svg` is often the only stable target, and result lists render an unknown number of rows at runtime so the loop bound must come from `count()`, not a hardcoded number.
+
+**Q&A — why use this?**
+- **Q: Why `page.locator('svg').first()` instead of a role or text locator?** A: An icon button usually has no accessible name and no visible text, `svg` (or an `aria-label` on it, when present) is the only stable hook.
+- **Q: Why loop with `count()` + `nth(i)` instead of `.all()`?** A: Both work, `count()`/`nth(i)` re-queries the DOM per index so it tolerates a list that's still rendering; `.all()` snapshots the locator list once, which can miss rows that appear after the snapshot.
+- **Q: Why does a broad XPath with multiple `contains(@data-id, ...)` show up here?** A: Flipkart's result cards vary `data-id` prefix by category (`CPU`, `ACC`, `COM`, `MP`), one `or`-chained XPath matches every card type in a mixed search result instead of writing a separate locator per category.
+
+```mermaid
+flowchart TD
+    A["page.locator&#40;'svg'&#41;.first&#40;&#41;.click&#40;&#41;"] --> B[search icon fires]
+    B --> C["titleResults = page.locator&#40;xpath&#41;"]
+    C --> D["count = await titleResults.count&#40;&#41;"]
+    D --> E{"i < count?"}
+    E -->|yes| F["titleResults.nth&#40;i&#41;.textContent&#40;&#41;"]
+    F --> E
+    E -->|no| G[done]
+```
+
+```ts
+const svgElements: Locator = page.locator('svg');
+await svgElements.first().click();
+
+const titleResults: Locator = page.locator(
+    "//div[contains(@data-id,'CPU') or contains(@data-id,'ACC') or contains(@data-id,'COM') or contains(@data-id,'MP')]/div/a[2]"
+);
+
+const count: number = await titleResults.count();
+for (let i = 0; i < count; i++) {
+    const title: string | null = await titleResults.nth(i).textContent();
+    console.log(title);
+}
 ```
 
 ## Configuration Highlights
@@ -778,7 +826,7 @@ Defined in `playwright.config.ts`:
 
 - `testDir: './tests'` — where specs live
 - `testMatch: ['tests/**/*.spec.ts']` — recurses into every numbered module folder
-- `fullyParallel: true` — run test files in parallel
+- `fullyParallel: false` — test files run serially (dialed back from parallel while module 12's Flipkart-hosted spec is under active development)
 - `reporter: [["line"], ["./utils/CustomReporter.ts"]]` — terminal progress + the custom TTA HTML report (module 05)
 - `trace: 'on'`, `screenshot: 'on'`, `video: 'on'` — full debug artifacts for every run (heavier, dial back for CI)
 - `headless: false`, `viewport: null` + `launchOptions.args: ['--start-maximized']` — browser opens maximized to the real screen size instead of a fixed viewport
