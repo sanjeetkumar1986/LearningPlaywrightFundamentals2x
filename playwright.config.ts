@@ -45,7 +45,6 @@ export default defineConfig({
 
   /* Configure projects for major browsers */
   projects: [
-<<<<<<< HEAD
     // {
     //   name: 'chromium',
     //   use: {
@@ -60,20 +59,22 @@ export default defineConfig({
 
    {
      name: 'firefox',
-     use: { ...devices['Desktop Firefox'] },
-=======
-    {
-      name: 'chromium',
-      use: {
-        ...devices['Desktop Chrome'],
-        viewport: { width: 1920, height: 1080 },
-        launchOptions : {
-          args : ['--incognito']
-        }
-      },
+     use: { ...devices['Desktop Firefox']} },
+    // {
+    //   name: 'chromium',
+    //   use: {
+    //     ...devices['Desktop Chrome'],
+    //     viewport: { width: 1920, height: 1080 },
+    //     ignoreHTTPSErrors: true,
+    //     launchOptions : {
+    //       args : [
+    //         '--disable-blink-features=AutomationControlled',
+    //          '--no-sandbox'
+    //       ]
+    //     }
+    //   },
   
->>>>>>> fed4066a04edf34d194dd0633699fc7daa8edb12
-    },
+    // },
     // {
     //   name: 'chromium',
     //   use: { ...devices['Desktop Chrome'] },
